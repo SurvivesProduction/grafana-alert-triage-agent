@@ -1,0 +1,71 @@
+{
+  "flapping_noise_example": {
+    "receiver": "n8n-webhook",
+    "status": "firing",
+    "alerts": [
+      {
+        "status": "firing",
+        "labels": {
+          "alertname": "HighCPUUsage",
+          "severity": "warning",
+          "service": "batch-worker"
+        },
+        "annotations": {
+          "summary": "CPU usage above 80 percent for 1 minute on batch-worker"
+        },
+        "startsAt": "2026-07-24T12:00:00Z",
+        "endsAt": "0001-01-01T00:00:00Z",
+        "generatorURL": "https://your-grafana-instance/d/batch-worker-cpu",
+        "fingerprint": "highcpuusage-batch-worker"
+      }
+    ],
+    "groupLabels": {
+      "alertname": "HighCPUUsage"
+    },
+    "commonLabels": {
+      "alertname": "HighCPUUsage",
+      "severity": "warning"
+    },
+    "commonAnnotations": {
+      "summary": "CPU usage above 80 percent for 1 minute on batch-worker"
+    },
+    "externalURL": "https://your-grafana-instance",
+    "version": "1",
+    "groupKey": "highcpuusage-batch-worker"
+  },
+  "critical_real_example": {
+    "receiver": "n8n-webhook",
+    "status": "firing",
+    "alerts": [
+      {
+        "status": "firing",
+        "labels": {
+          "alertname": "DatabaseConnectionsExhausted",
+          "severity": "critical",
+          "service": "checkout-api"
+        },
+        "annotations": {
+          "summary": "checkout-api has 0 available database connections, writes are failing"
+        },
+        "startsAt": "2026-07-24T12:05:00Z",
+        "endsAt": "0001-01-01T00:00:00Z",
+        "generatorURL": "https://your-grafana-instance/d/checkout-api-db",
+        "fingerprint": "databaseconnectionsexhausted-checkout-api"
+      }
+    ],
+    "groupLabels": {
+      "alertname": "DatabaseConnectionsExhausted"
+    },
+    "commonLabels": {
+      "alertname": "DatabaseConnectionsExhausted",
+      "severity": "critical"
+    },
+    "commonAnnotations": {
+      "summary": "checkout-api has 0 available database connections, writes are failing"
+    },
+    "externalURL": "https://your-grafana-instance",
+    "version": "1",
+    "groupKey": "databaseconnectionsexhausted-checkout-api"
+  },
+  "stress_test_notes": "To reproduce the video stress test: POST flapping_noise_example to the webhook 5-6 times within a 10-minute window (should suppress after the 4th), then POST critical_real_example once in the middle of that burst (should escalate immediately regardless of timing)."
+}
