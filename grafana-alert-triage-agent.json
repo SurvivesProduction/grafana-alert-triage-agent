@@ -1,0 +1,278 @@
+{
+  "name": "Grafana Alert Triage Agent",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "grafana-alert-triage",
+        "options": {}
+      },
+      "id": "gaa-0001-webhook",
+      "name": "Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        -2112,
+        -320
+      ],
+      "webhookId": "gaa-webhook-0001"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Parse a Grafana alerting webhook payload into flat fields.\n// Grafana's default webhook shape: { receiver, status, alerts: [ { status, labels, annotations, startsAt, endsAt, generatorURL, fingerprint } ], externalURL, commonAnnotations, commonLabels }\nconst body = $json.body || $json;\nconst alert = (body.alerts && body.alerts[0]) || body;\nconst labels = alert.labels || {};\nconst annotations = alert.annotations || {};\n\nreturn [{\n  json: {\n    alertname: labels.alertname || 'unknown_alert',\n    severity: labels.severity || 'unknown',\n    service: labels.service || labels.job || 'unknown_service',\n    summary: annotations.summary || body.commonAnnotations?.summary || 'No summary provided',\n    status: alert.status || body.status || 'firing',\n    dashboardURL: alert.generatorURL || body.externalURL || '',\n    fingerprint: alert.fingerprint || ((labels.alertname || 'unknown') + '-' + (labels.service || labels.job || 'unknown'))\n  }\n}];"
+      },
+      "id": "gaa-0002-parse-alert",
+      "name": "Parse Grafana Alert",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -1952,
+        -320
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Flap detection: count how many times this exact alert (by fingerprint)\n// has fired in the last 10 minutes, using workflow static data as memory.\nconst staticData = $getWorkflowStaticData('node');\nconst key = $json.fingerprint;\nconst now = Date.now();\nconst windowMs = 10 * 60 * 1000; // 10 minutes\n\nif (!staticData.fireLog) staticData.fireLog = {};\nif (!staticData.fireLog[key]) staticData.fireLog[key] = [];\n\nstaticData.fireLog[key] = staticData.fireLog[key].filter((ts) => now - ts < windowMs);\nstaticData.fireLog[key].push(now);\n\nconst recentCount = staticData.fireLog[key].length;\n\nreturn [{\n  json: {\n    ...$json,\n    recent_fire_count: recentCount\n  }\n}];"
+      },
+      "id": "gaa-0003-flap-check",
+      "name": "Flap Check",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -1792,
+        -320
+      ]
+    },
+    {
+      "parameters": {
+        "resource": "text",
+        "operation": "message",
+        "modelId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "claude-haiku-4-5"
+        },
+        "messages": {
+          "values": [
+            {
+              "content": "={{ JSON.stringify($json) }}",
+              "role": "user"
+            }
+          ]
+        },
+        "simplify": true,
+        "options": {
+          "system": "You triage Grafana monitoring alerts for an on-call engineer. Given an alert's name, severity, service, summary, status, and recent_fire_count (how many times this exact alert has fired in the last 10 minutes), decide whether this needs a human right now. Respond with strict JSON: {\"decision\": \"noise\"|\"real\", \"reason\": \"one sentence\"}. Treat recent_fire_count >= 4 as flapping/noise unless severity is \"critical\". A fresh alert (recent_fire_count <= 1) with severity \"critical\" or \"high\" is always \"real\".",
+          "maxTokens": 512
+        }
+      },
+      "id": "gaa-0004-classify",
+      "name": "Classify Alert (AI)",
+      "type": "@n8n/n8n-nodes-langchain.anthropic",
+      "typeVersion": 1,
+      "position": [
+        -1632,
+        -320
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 5000
+    },
+    {
+      "parameters": {
+        "jsCode": "// Parse the AI node's reply into flat fields and merge with the alert.\nconst item = $input.first().json;\nconst alert = $('Flap Check').first().json;\n\nlet raw = '';\nif (Array.isArray(item.content) && item.content[0] && item.content[0].text) {\n  raw = item.content[0].text;\n} else if (typeof item.content === 'string') {\n  raw = item.content;\n} else if (item.text) {\n  raw = item.text;\n} else if (item.message && Array.isArray(item.message.content) && item.message.content[0]) {\n  raw = item.message.content[0].text || '';\n}\n\nraw = raw.trim().replace(/^```(?:json)?\\s*/i, '').replace(/```\\s*$/i, '').trim();\n\nlet parsed;\ntry {\n  parsed = JSON.parse(raw);\n} catch (e) {\n  parsed = {\n    decision: 'real',\n    reason: '[PARSE ERROR] Could not parse AI response as JSON: ' + String(raw).slice(0, 200)\n  };\n}\n\nreturn [{\n  json: {\n    ...alert,\n    decision: parsed.decision || 'real',\n    reason: parsed.reason || '[MISSING] reason'\n  }\n}];"
+      },
+      "id": "gaa-0005-parse-ai",
+      "name": "Parse AI Response",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -1472,
+        -320
+      ]
+    },
+    {
+      "parameters": {
+        "rules": {
+          "values": [
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 1
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{$json.decision}}",
+                    "rightValue": "noise",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "noise"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 1
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{$json.decision}}",
+                    "rightValue": "real",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "real"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "gaa-0006-route",
+      "name": "Route by decision",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3,
+      "position": [
+        -1312,
+        -320
+      ]
+    },
+    {
+      "parameters": {
+        "select": "channel",
+        "channelId": {
+          "__rl": true,
+          "value": "alerts-demo",
+          "mode": "name"
+        },
+        "text": "=_Suppressed_ — *{{$json.alertname}}* on `{{$json.service}}` (fired {{$json.recent_fire_count}}x in last 10 min)\n> {{$json.reason}}",
+        "otherOptions": {}
+      },
+      "id": "gaa-0007-suppressed",
+      "name": "Post Suppressed Log",
+      "type": "n8n-nodes-base.slack",
+      "typeVersion": 2.2,
+      "position": [
+        -1040,
+        -480
+      ]
+    },
+    {
+      "parameters": {
+        "select": "channel",
+        "channelId": {
+          "__rl": true,
+          "value": "alerts-demo",
+          "mode": "name"
+        },
+        "text": "=<!here> *{{$json.severity}}* — {{$json.alertname}} on `{{$json.service}}`\n> {{$json.summary}}\n*Why escalated:* {{$json.reason}}\n<{{$json.dashboardURL}}|Dashboard>",
+        "otherOptions": {}
+      },
+      "id": "gaa-0008-escalation",
+      "name": "Post Escalation",
+      "type": "n8n-nodes-base.slack",
+      "typeVersion": 2.2,
+      "position": [
+        -1040,
+        -160
+      ]
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Webhook": {
+      "main": [
+        [
+          {
+            "node": "Parse Grafana Alert",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse Grafana Alert": {
+      "main": [
+        [
+          {
+            "node": "Flap Check",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Flap Check": {
+      "main": [
+        [
+          {
+            "node": "Classify Alert (AI)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Classify Alert (AI)": {
+      "main": [
+        [
+          {
+            "node": "Parse AI Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse AI Response": {
+      "main": [
+        [
+          {
+            "node": "Route by decision",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Route by decision": {
+      "main": [
+        [
+          {
+            "node": "Post Suppressed Log",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Post Escalation",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1"
+  }
+}
